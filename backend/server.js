@@ -16,7 +16,6 @@ const scheduleRoutes = require('./routes/schedule');
 const contactRoutes = require('./routes/contact');
 const analyticsRoutes = require('./routes/analytics');
 const reviewRoutes = require('./routes/review');
-const planRoutes = require('./routes/plan');
 
 dotenv.config();
 const app = express();
@@ -47,7 +46,6 @@ app.use('/api/schedule', scheduleRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/review', reviewRoutes);
-app.use('/api/plan', planRoutes);
 
 // Error Handler Middleware
 app.use(errorHandler);
@@ -61,40 +59,39 @@ app.get('/api/test', (req, res) => {
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    // User joins their own room (for private messaging)
-    socket.on('joinUser', (userId) => {
-        socket.join(userId);
-        console.log(`User ${socket.id} joined their room: ${userId}`);
-    });
-
-    // User joins their gym room (for gym-wide messages, if needed)
     socket.on('joinGym', (gymId) => {
+        if (!gymId) {
+            console.error('Invalid gymId:', gymId);
+            return;
+        }
         socket.join(gymId);
         console.log(`User ${socket.id} joined gym ${gymId}`);
     });
 
-    // Send a private message
-    socket.on('sendPrivateMessage', async ({ senderId, senderModel, recipientId, recipientModel, message }) => {
+    socket.on('sendMessage', async ({ gymId, senderId, senderModel, message }) => {
         try {
+            if (!gymId || !senderId || !senderModel || !message) {
+                console.error('Missing required fields for chat message:', { gymId, senderId, senderModel, message });
+                return;
+            }
+
             const ChatMessage = require('./models/ChatMessage');
             const chatMessage = new ChatMessage({
+                gym: gymId,
                 sender: senderId,
                 senderModel,
-                recipient: recipientId,
-                recipientModel,
                 message,
             });
             await chatMessage.save();
 
             const populatedMessage = await ChatMessage.findById(chatMessage._id)
                 .populate('sender', 'name')
-                .populate('recipient', 'name')
                 .exec();
 
-            // Emit the message to both sender and recipient
-            io.to(senderId).to(recipientId).emit('receivePrivateMessage', populatedMessage);
+            io.to(gymId).emit('receiveMessage', populatedMessage);
+            console.log(`Message sent to gym ${gymId}:`, populatedMessage);
         } catch (error) {
-            console.error('Error saving private message:', error);
+            console.error('Error saving or emitting message:', error);
         }
     });
 

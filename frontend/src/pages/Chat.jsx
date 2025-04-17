@@ -1,112 +1,91 @@
-import { useState, useEffect, useContext, useRef } from 'react';
-import io from 'socket.io-client';
+import { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
+import io from 'socket.io-client';
 import { toast } from 'react-toastify';
-import useAnalytics from '../hooks/useAnalytics';
 
 const socket = io('http://localhost:5000');
 
 const Chat = () => {
-    useAnalytics('Chat');
-
     const { user, userDetails } = useContext(AuthContext);
-    const [recipients, setRecipients] = useState([]);
-    const [selectedRecipient, setSelectedRecipient] = useState(null);
     const [messages, setMessages] = useState([]);
-    const [message, setMessage] = useState('');
-    const messagesEndRef = useRef(null);
+    const [newMessage, setNewMessage] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
     useEffect(() => {
-        if (!user || !userDetails?.gym) return;
+        const fetchMessages = async () => {
+            if (!userDetails?.gym) {
+                setError('You must be part of a gym to view chats');
+                setLoading(false);
+                return;
+            }
 
-        // Join the user's own room for private messaging
-        socket.emit('joinUser', user.id);
-
-        // Fetch available recipients
-        const fetchRecipients = async () => {
             try {
                 setLoading(true);
                 const token = localStorage.getItem('token');
-                const res = await axios.get('http://localhost:5000/api/chat/recipients', {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                setRecipients(res.data);
-            } catch (err) {
-                setError('Failed to fetch recipients');
-                toast.error('Failed to fetch recipients');
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        fetchRecipients();
-
-        // Listen for private messages
-        socket.on('receivePrivateMessage', (newMessage) => {
-            if (
-                (newMessage.sender._id === user.id && newMessage.recipient._id === selectedRecipient?.id) ||
-                (newMessage.sender._id === selectedRecipient?.id && newMessage.recipient._id === user.id)
-            ) {
-                setMessages((prevMessages) => [...prevMessages, newMessage]);
-            }
-        });
-
-        return () => {
-            socket.off('receivePrivateMessage');
-        };
-    }, [user, userDetails, selectedRecipient]);
-
-    useEffect(() => {
-        if (!selectedRecipient) return;
-
-        // Fetch private messages with the selected recipient
-        const fetchMessages = async () => {
-            try {
-                const token = localStorage.getItem('token');
-                const res = await axios.get(`http://localhost:5000/api/chat/private-messages/${selectedRecipient.id}`, {
+                const res = await axios.get(`http://localhost:5000/api/chat/${userDetails.gym}`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 setMessages(res.data);
             } catch (err) {
                 setError('Failed to fetch messages');
                 toast.error('Failed to fetch messages');
+            } finally {
+                setLoading(false);
             }
         };
 
-        fetchMessages();
-    }, [selectedRecipient]);
+        if (user?.role === 'member' || user?.role === 'trainer' || user?.role === 'gym') {
+            fetchMessages();
+        }
 
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+        // Join gym room
+        if (userDetails?.gym) {
+            socket.emit('joinGym', userDetails.gym);
+        }
 
-    const handleSendMessage = () => {
-        if (!message.trim() || !selectedRecipient) return;
-
-        socket.emit('sendPrivateMessage', {
-            senderId: user.id,
-            senderModel: user.role.charAt(0).toUpperCase() + user.role.slice(1),
-            recipientId: selectedRecipient.id,
-            recipientModel: selectedRecipient.role.charAt(0).toUpperCase() + selectedRecipient.role.slice(1),
-            message,
+        // Listen for new messages
+        socket.on('receiveMessage', (message) => {
+            setMessages((prevMessages) => [...prevMessages, message]);
         });
 
-        setMessage('');
+        // Cleanup on unmount
+        return () => {
+            socket.off('receiveMessage');
+        };
+    }, [user, userDetails]);
+
+    const handleSendMessage = (e) => {
+        e.preventDefault();
+        if (!newMessage.trim()) return;
+
+        if (!userDetails?.gym) {
+            toast.error('You must be part of a gym to send messages');
+            return;
+        }
+
+        const messageData = {
+            gymId: userDetails.gym,
+            senderId: user.id,
+            senderModel: user.role.charAt(0).toUpperCase() + user.role.slice(1),
+            message: newMessage,
+        };
+
+        socket.emit('sendMessage', messageData);
+        setNewMessage('');
     };
 
-    if (!userDetails?.gym) {
+    if (user?.role !== 'member' && user?.role !== 'trainer' && user?.role !== 'gym') {
         return <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-            <p className="text-red-500">You must join a gym to use the chat.</p>
+            <p className="text-red-500">Access denied. This page is only for Members, Trainers, and Gyms.</p>
         </div>;
     }
 
     return (
         <div className="min-h-screen bg-gray-100 py-6 sm:py-8 px-4">
             <div className="container mx-auto">
-                <h1 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6 text-center">Chat</h1>
+                <h1 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6 text-center">Gym Chat</h1>
                 {error && <p className="text-red-500 mb-4 text-center">{error}</p>}
                 {loading ? (
                     <div className="flex justify-center">
@@ -116,71 +95,33 @@ const Chat = () => {
                         </svg>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        {/* Recipient List */}
-                        <div className="bg-white p-4 rounded-lg shadow-lg md:col-span-1">
-                            <h2 className="text-lg sm:text-xl font-bold mb-4">Select a Recipient</h2>
-                            {recipients.length > 0 ? (
-                                <ul className="space-y-2">
-                                    {recipients.map((recipient) => (
-                                        <li
-                                            key={recipient.id}
-                                            className={`p-2 rounded cursor-pointer ${selectedRecipient?.id === recipient.id ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
-                                            onClick={() => setSelectedRecipient(recipient)}
-                                        >
-                                            <p className="text-sm sm:text-base">{recipient.name} ({recipient.email})</p>
-                                            <p className="text-xs sm:text-sm text-gray-500">{recipient.role}</p>
-                                        </li>
-                                    ))}
-                                </ul>
-                            ) : (
-                                <p className="text-gray-700 text-center">No recipients available</p>
-                            )}
+                    <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg">
+                        <div className="max-h-96 overflow-y-auto mb-4">
+                            {messages.map((msg) => (
+                                <div key={msg._id} className={`mb-2 ${msg.sender._id === user.id ? 'text-right' : 'text-left'}`}>
+                                    <p className={`inline-block p-2 rounded-lg ${msg.sender._id === user.id ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'} text-sm sm:text-base`}>
+                                        <strong>{msg.sender.name}:</strong> {msg.message}
+                                    </p>
+                                    <p className="text-xs text-gray-500 mt-1">{new Date(msg.createdAt).toLocaleString()}</p>
+                                </div>
+                            ))}
                         </div>
-
-                        {/* Chat Window */}
-                        <div className="bg-white p-4 rounded-lg shadow-lg md:col-span-3">
-                            {selectedRecipient ? (
-                                <>
-                                    <h2 className="text-lg sm:text-xl font-bold mb-4">
-                                        Chat with {selectedRecipient.name} ({selectedRecipient.role})
-                                    </h2>
-                                    <div className="h-96 overflow-y-auto mb-4 p-4 border rounded-lg">
-                                        {messages.map((msg) => (
-                                            <div
-                                                key={msg._id}
-                                                className={`mb-2 ${msg.sender._id === user.id ? 'text-right' : 'text-left'}`}
-                                            >
-                                                <p className="text-xs sm:text-sm text-gray-500">
-                                                    {msg.sender._id === user.id ? 'You' : msg.sender.name} - {new Date(msg.createdAt).toLocaleString()}
-                                                </p>
-                                                <p className={`inline-block p-2 rounded-lg text-sm sm:text-base ${msg.sender._id === user.id ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
-                                                    {msg.message}
-                                                </p>
-                                            </div>
-                                        ))}
-                                        <div ref={messagesEndRef} />
-                                    </div>
-                                    <div className="flex flex-col sm:flex-row gap-2">
-                                        <input
-                                            type="text"
-                                            value={message}
-                                            onChange={(e) => setMessage(e.target.value)}
-                                            placeholder="Type a message..."
-                                            className="flex-1 p-2 border rounded"
-                                        />
-                                        <button
-                                            onClick={handleSendMessage}
-                                            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                                        >
-                                            Send
-                                        </button>
-                                    </div>
-                                </>
-                            ) : (
-                                <p className="text-gray-700 text-center">Select a recipient to start chatting</p>
-                            )}
-                        </div>
+                        <form onSubmit={handleSendMessage} className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
+                            <input
+                                type="text"
+                                value={newMessage}
+                                onChange={(e) => setNewMessage(e.target.value)}
+                                className="flex-1 p-2 border rounded"
+                                placeholder="Type your message..."
+                                required
+                            />
+                            <button
+                                type="submit"
+                                className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                            >
+                                Send
+                            </button>
+                        </form>
                     </div>
                 )}
             </div>
